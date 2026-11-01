@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -29,6 +29,23 @@ export function listProfiles() {
   const root = join(dataHome(), 'profiles');
   return existsSync(root) ? readdirSync(root, { withFileTypes: true }).filter(f => f.isDirectory() && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(f.name)).map(f => f.name).sort() : [];
 }
+/** Removes a profile's folder, and the saved last-profile pointer when it names it. The real lock decides: a profile another Pi is using is open, so deleting it would leave that Pi writing into a folder that no longer exists. */
+export async function deleteProfile(name: string) {
+  const dir = profilePath(name);
+  if (!existsSync(dir)) throw new Error(`Profile ${name} does not exist.`);
+  const unlock = await lockProfile(dir, 'deleting');
+  try {
+    // Renamed to a hidden sibling before the rmSync: a delete that fails on Windows then cannot leave half a profile in the picker (listProfiles() hides dot names).
+    const reserved = join(dataHome(), 'profiles', `.deleting-${name}-${Date.now()}`);
+    renameSync(dir, reserved);
+    rmSync(reserved, { recursive: true, force: true, maxRetries: 3 });
+    // listProfiles() already hides a name with no folder, but without this a profile created again under the same name would inherit the stale pointer.
+    const last = join(dataHome(), 'last-profile');
+    try { if (readFileSync(last, 'utf8').trim() === name) unlinkSync(last); } catch {}
+    return dir;
+  } finally { await unlock(); }
+}
+
 export function createProfile(name: string) {
   const dir = profilePath(name);
   if (existsSync(dir)) throw new Error(`Profile already exists: ${name}`);
