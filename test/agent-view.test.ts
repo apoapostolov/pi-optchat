@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAssistantMessageEventStream, type AssistantMessage } from '@earendil-works/pi-ai';
@@ -69,6 +69,33 @@ async function until(condition: () => boolean) {
   const deadline = Date.now() + 10000;
   while (!condition()) { if (Date.now() > deadline) throw new Error('Timed out'); await new Promise(r => setTimeout(r, 10)); }
 }
+
+test("the transcript follows Pi's hide-thinking setting, so Ctrl+T hides a child's reasoning too", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'optchat-agent-view-'));
+  const memory = new Memory(dir, async input => input.source.slice(0, 100), () => {});
+  const runtime = await ModelRuntime.create({ authPath: join(dir, 'auth.json'), modelsPath: null, refreshOnCreate: false });
+  const children = new Children(memory, new ModelRegistry(runtime), () => ({ provider: 'test', model: 'test', thinking: 'high' }), () => '', async () => {}, () => {}, dir);
+  const session = SessionManager.create(dir, join(dir, 'runs'));
+  session.appendMessage({ role: 'user', content: 'Your task:\nExplain it', timestamp: 1 });
+  session.appendMessage({ role: 'assistant', ...assistant, stopReason: 'stop', timestamp: 2,
+    content: [{ type: 'thinking', thinking: 'hidden reasoning' }, { type: 'text', text: 'Explained.' }] });
+  children.history.records.set('child-3', { id: 'child-3', task: 'Explain it', cwd: dir, model: 'anthropic/claude-test', thinking: 'high',
+    parentSession: 'parent', depth: 1, sessionFile: session.getSessionFile(), started: 1000, ended: 2000, state: 'completed', guidance: [] });
+  const tui = new TuiMainScreen(new OffscreenTerminal());
+  const settings = join(process.env.PI_CODING_AGENT_DIR!, 'settings.json');
+  const open = () => new AgentView({ id: 'child-3', children, tui, rows: () => 30, redraw: () => {}, done: () => {}, color: (_tone, text) => text });
+  const shown = open();
+  try {
+    assert.match(plain(shown.render(100)), /hidden reasoning/, 'reasoning shows while the main chat shows it');
+    writeFileSync(settings, JSON.stringify({ hideThinkingBlock: true }));
+    const hidden = open();
+    try {
+      const text = plain(hidden.render(100));
+      assert.doesNotMatch(text, /hidden reasoning/, "Ctrl+T in the main chat hides a child agent's reasoning too");
+      assert.match(text, /Explained\./, 'the answer itself still shows');
+    } finally { hidden.dispose(); }
+  } finally { rmSync(settings, { force: true }); shown.dispose(); await children.close(); await memory.close(); removeDir(dir); }
+});
 
 test('agent view labels guidance from the main agent and child reports, keeps the controls, and scrolls with the wheel', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'optchat-agent-view-'));
