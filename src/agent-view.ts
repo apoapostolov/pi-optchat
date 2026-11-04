@@ -160,6 +160,8 @@ export interface AgentViewOptions {
   /** Pi's tool-output toggle (Ctrl+O by default), so tool calls expand the same way as in the main chat. */
   isExpandKey?: (data: string) => boolean;
   signal?: AbortSignal;
+  /** Cwd to read Pi's hide-thinking setting from, defaulting to the child run's cwd. Pass the host window's cwd when the run may use a different project. */
+  settingsCwd?: string;
 }
 
 const statusOf = (run: RunInfo, children: Children) => {
@@ -194,8 +196,9 @@ export class AgentView implements Component, Focusable {
   constructor(private readonly options: AgentViewOptions) {
     const { children, id, tui, color } = options;
     const run = children.history.records.get(id);
-    // Follow Pi's hide-thinking setting (Ctrl+T), like the main chat's transcript does.
-    const hideThinking = SettingsManager.create(run?.cwd ?? process.cwd(), getAgentDir()).getHideThinkingBlock();
+    // Follow Pi's hide-thinking setting (Ctrl+T) from the host window's project when provided,
+    // like the main chat's transcript does, while still rendering tools with the child run's cwd.
+    const hideThinking = SettingsManager.create(options.settingsCwd ?? run?.cwd ?? process.cwd(), getAgentDir()).getHideThinkingBlock();
     this.transcript = new TranscriptView(tui, run?.cwd ?? process.cwd(), name => children.live(id)?.session.getToolDefinition(name), hideThinking);
     this.editor = new Editor(tui, { borderColor: text => color('borderMuted', text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => this.send(text);
@@ -332,6 +335,7 @@ export async function showAgentView(ctx: ExtensionContext, options: { id: string
       return new AgentView({ ...options, tui,
         rows: () => tui.terminal.rows, redraw: () => tui.requestRender(), done: () => done(undefined),
         color: (tone, text) => theme.fg(tone, text), isExpandKey: data => keybindings.matches(data, 'app.tools.expand'),
+        settingsCwd: ctx.cwd,
       });
     }, { overlay: true, overlayOptions: { width: '100%', maxHeight: '100%', row: 0, col: 0 } });
   } finally { restore(); }
