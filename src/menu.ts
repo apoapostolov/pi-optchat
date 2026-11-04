@@ -32,8 +32,8 @@ const failing = (error: string) => `Summaries failing: ${oneLine(error)}`;
 /** Framed like the settings page: title, the profile's status as aligned rows, then the actions with what each opens. */
 /** The select list and, with it, the j/k movement both menus share: rows styled once, a delete shortcut can pre-empt a key. */
 function sharedList(items: SelectItem[], theme: Theme, close: (value?: string) => void, redraw = () => {},
-  shortcut?: (data: string, current: string | undefined) => boolean) {
-  const list = new SelectList(items, items.length, {
+  shortcut?: (data: string, current: string | undefined) => boolean, maxVisible = 10) {
+  const list = new SelectList(items, maxVisible, {
     selectedPrefix: t => theme.fg('accent', t), selectedText: t => theme.fg('accent', t),
     description: t => theme.fg('muted', t), scrollInfo: t => theme.fg('muted', t), noMatch: t => theme.fg('muted', t) },
     { minPrimaryColumnWidth: 1, maxPrimaryColumnWidth: Math.max(...items.map(i => i.label.length)) + 4 });

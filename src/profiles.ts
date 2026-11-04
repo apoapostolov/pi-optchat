@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, type Stats } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createConnection, createServer } from 'node:net';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
 import type { ModelChoice } from './compactor.ts';
 import { record } from './core/cache.ts';
 import { atomicWrite } from './store.ts';
@@ -38,10 +38,12 @@ export async function deleteProfile(name: string) {
     // Renamed to a hidden sibling before the rmSync: a delete that fails on Windows then cannot leave half a profile in the picker (listProfiles() hides dot names).
     const reserved = join(dataHome(), 'profiles', `.deleting-${name}-${Date.now()}`);
     renameSync(dir, reserved);
-    rmSync(reserved, { recursive: true, force: true, maxRetries: 3 });
     // listProfiles() already hides a name with no folder, but without this a profile created again under the same name would inherit the stale pointer.
+    // Clear it immediately after the rename, before the recursive removal, so an rmSync failure cannot leave a stale pointer behind.
     const last = join(dataHome(), 'last-profile');
-    try { if (readFileSync(last, 'utf8').trim() === name) unlinkSync(last); } catch {}
+    try { if (readFileSync(last, 'utf8').trim() === name) unlinkSync(last); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    rmSync(reserved, { recursive: true, force: true, maxRetries: 3 });
     return dir;
   } finally { await unlock(); }
 }
@@ -84,9 +86,17 @@ export function rememberProfile(name: string) { atomicWrite(join(dataHome(), 'la
 export class ProfileBusyError extends Error {
   constructor(readonly owner: string) { super(`Profile already running: ${owner}`); }
 }
-/** POSIX keeps a socket file in the profile itself, so every Pi on the profile finds the same one whatever its TMPDIR, and Git skips it. Windows has no Unix sockets, so the profile path is hashed into a named pipe in the machine-wide pipe namespace. */
+/**
+ * The lock lives outside the profile directory so a deletion can rename the profile away without moving the socket.
+ * An old server's close therefore cannot unlink a replacement owner's socket at the same path.
+ * POSIX keeps the lock file under a hidden per-profile directory, so every Pi on the profile finds the same one whatever its TMPDIR, and Git skips it.
+ * Windows has no Unix sockets, so the profile path is hashed into a named pipe in the machine-wide pipe namespace.
+ */
 export function profileSocket(dir: string, purpose: 'lock' | 'windows' = 'lock') {
-  if (!isWindows) return join(dir, `${purpose}.sock`);
+  if (!isWindows) {
+    if (purpose === 'lock') return join(dataHome(), '.locks', basename(dir), 'lock.sock');
+    return join(dir, `${purpose}.sock`);
+  }
   // Hash the directory's real identity, so another casing, a junction or a symlink to the same profile finds the same pipe.
   let identity = resolve(dir); try { identity = realpathSync.native(identity); } catch {}
   return `${PIPE_PREFIX}optchat-${createHash('sha256').update(identity.toLowerCase()).digest('hex').slice(0, 16)}-${purpose}`;
@@ -123,6 +133,7 @@ function readOwner(path: string) {
 /** OS-owned socket lifetime, no timeout-based stealing of a busy profile. */
 export async function lockProfile(dir: string, description: string) {
   const socketPath = profileSocket(dir); checkSocketPath(socketPath);
+  if (!isWindows) mkdirSync(dirname(socketPath), { recursive: true });
   const server = createServer(socket => { socket.on('error', () => socket.destroy()); socket.end(description); });
   const listen = () => new Promise<void>((resolve, reject) => {
     const failed = (error: Error) => { server.off('listening', ready); reject(error); };

@@ -58,7 +58,7 @@ Details, errors and join rules: [docs/connected-windows.md](docs/connected-windo
 | Command | Action |
 | --- | --- |
 | `/optchat` | Status and actions menu. |
-| `/optchat profile` | Select, create, or delete a profile. Switching starts a fresh Pi session; Ctrl+D deletes the highlighted one. |
+| `/optchat profile` | Select, create, or delete a profile. Ctrl+D deletes the highlighted one. |
 | `/optchat settings` | This profile's [settings](#settings). |
 | `/optchat model` | Compactor model and effort for this profile. Type to filter the models you are logged in to; the current one is marked. |
 | `/optchat agents` | Live agent tree and saved run history. |
