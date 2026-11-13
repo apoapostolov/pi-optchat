@@ -411,7 +411,7 @@ export class Children {
       // A stop that lands before the first prompt has no turn to abort, so it is honoured here.
       const state: RunState = info.state; // a local, so the loop below still sees later state changes
       if (this.closing || info.handoff || state === 'stopping') throw new Error('Stopped before its first request.');
-      await session.prompt(prompt);
+      try { await session.prompt(prompt); } finally { live.prompting = undefined; }
       while (info.state !== 'stopping') {
         if (live.interruption) {
           // A message Pi took during the abort (a rebuild of its queue can still be landing) went into a request the abort
@@ -550,7 +550,7 @@ export class Children {
     if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
     const live = this.running.get(id), run = this.history.records.get(id);
     if (!live && run && runsElsewhere(run)) throw new Error(`${id} is a connected window running in its own Pi process, which tell can't reach. Its handoff arrives when it ends.`);
-    if (!live && source === 'manager' && run) return this.track(this.resume(id, message, caller));
+    if (!live && source === 'manager' && run) return this.track(this.resume(id, message, { caller }));
     if (live && !['running', 'waiting', 'paused'].includes(live.info.state)) throw new Error(`${id} is finishing. Its report will arrive on its own${live.info.connected || source === 'user' ? '' : '; tell it again after that to resume it'}.`);
     if (!live) throw new Error(`No running subagent ${id}.`);
     const text = live.info.connected && source === 'manager' ? `[Main agent guidance]\n${message.trim()}` : message.trim(); if (!message.trim()) throw new Error('Message is empty.');
@@ -568,6 +568,8 @@ export class Children {
     if (guidance.state === 'undelivered') throw new Error(`${id} finished before it read the message. Tell it again to resume it.`);
     return 'Message queued for the next tool boundary.';
   }
+  /** The user's message to a finished subagent from another app (pi-optchat/files' attachAgent): it resumes as a tell from the main agent would, but the message is the user's. */
+  resumeByUser(id: string, message: string) { return this.track(this.resume(id, message, { from: 'user' })); }
   /**
    * The user's Ctrl+C, never destructive: aborts the current step. With guidance queued, the run continues at once with it;
    * with none, it pauses until the next message (from the user or a tell). Only stop() ends a run.
@@ -624,8 +626,10 @@ export class Children {
     return work;
   }
   /** Reopens a finished child from its saved transcript, same ID, parent and model, and gives it a new message. */
-  private async resume(id: string, message: string, caller: string | undefined) {
-    const run = this.history.records.get(id)!, text = message.trim();
+  private async resume(id: string, message: string, { caller, from = 'manager' }: { caller?: string; from?: Guidance['from'] } = {}) {
+    if (this.deleting.has(id)) throw new Error(`${id} is being deleted by the user.`);
+    const run = this.history.records.get(id), text = message.trim();
+    if (!run) throw new Error(`No subagent ${id}.`);
     if (!text) throw new Error('Message is empty.');
     if (run.connected) throw new Error(`${id} was a connected conversation with the user. It has ended and its handoff was delivered, so it cannot be resumed. Spawn a new subagent instead.`);
     if (!['completed', 'failed', 'stopped', 'interrupted'].includes(run.state) || this.resuming.has(id)) throw new Error(`${id} is still finishing. Its report will arrive on its own.`);
@@ -656,10 +660,14 @@ export class Children {
       const { ended: _ended, cutOff: _cutOff, ...rest } = run;
       const cut = [...this.history.records.values()].filter(r => r.parentId === id && r.cutOff).map(r => r.id);
       const prompt = cutOffChildren(text, cut);
-      const info: RunInfo = { ...rest, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession,
-        guidance: [...run.guidance, { text: prompt, date: Date.now(), state: 'queued', from: 'manager' }] };
-      try { this.save(info); } catch (error) { this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error; }
-      const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [], steering: Promise.resolve() };
+      const guidance: Guidance = { text: prompt, date: Date.now(), state: 'queued', from };
+      const info: RunInfo = { ...rest, state: 'running', started: Date.now(), parentSession: this.options.parentSession ?? run.parentSession, guidance: [...run.guidance, guidance] };
+      try {
+        if (from === 'user') this.memory.append('user', `Direct guidance to subagent [${id}]: ${text}`);
+        this.save(info);
+      } catch (error) { this.history.records.set(id, run); await this.shutdown(session); this.dispose(session); throw error; }
+      // The prompt is this guidance even when Pi expands it (a skill), so it is marked read and keeps its sender.
+      const live: LiveRun = { session, info, updated: Date.now(), tools: new Map(), pendingReports: [], pendingGuidance: [], steering: Promise.resolve(), prompting: guidance };
       this.running.set(id, live);
       this.launching--; reserved = false;
       session.subscribe(event => this.observe(live, event));
@@ -689,7 +697,7 @@ export class Children {
         if (!this.history.records.get(run.parentId)?.cutOff && !this.running.has(run.parentId)) { orphans.push(`${run.id} (under ${run.parentId})`); drop(run); }
         continue;
       }
-      try { await this.track(this.resume(id, RESTARTED, undefined)); resumed.push(id); }
+      try { await this.track(this.resume(id, RESTARTED)); resumed.push(id); }
       catch (error) {
         const still = current(id);
         if (!still) continue; // Resumed by someone else meanwhile.
